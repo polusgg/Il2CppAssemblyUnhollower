@@ -5,6 +5,7 @@ using System.Text;
 using AssemblyUnhollower.Extensions;
 using AssemblyUnhollower.Passes;
 using Mono.Cecil;
+using UnhollowerBaseLib;
 using UnhollowerRuntimeLib.XrefScans;
 
 namespace AssemblyUnhollower.Contexts
@@ -44,7 +45,10 @@ namespace AssemblyUnhollower.Contexts
                                      (OriginalMethod?.Name?.IsObfuscated(declaringType.AssemblyContext.GlobalContext
                                          .Options) ?? false);
 
-            var newMethod = new MethodDefinition("", AdjustAttributes(originalMethod.Attributes), declaringType.AssemblyContext.Imports.Void);
+
+            bool AssemblyCSharp = originalMethod.Module.Assembly.Name.Name == "Assembly-CSharp";
+
+            var newMethod = new MethodDefinition("", AssemblyCSharp ? AssemblyCSharpAdjustAttributes(originalMethod.Attributes) : AdjustAttributes(originalMethod.Attributes), declaringType.AssemblyContext.Imports.Void);
             NewMethod = newMethod;
 
             if (originalMethod.CustomAttributes.Any(x => x.AttributeType.FullName == typeof(ExtensionAttribute).FullName))
@@ -143,16 +147,26 @@ namespace AssemblyUnhollower.Contexts
             return original;
         }
 
+        private MethodAttributes AssemblyCSharpAdjustAttributes(MethodAttributes original)
+        {
+            original &= ~(MethodAttributes.MemberAccessMask); // todo: handle Object overload correctly
+            original &= ~(MethodAttributes.PInvokeImpl);
+            original &= ~(MethodAttributes.Abstract);
+            //original &= ~(MethodAttributes.Virtual);
+            original &= ~(MethodAttributes.Final);
+            original &= ~(MethodAttributes.NewSlot);
+            original &= ~(MethodAttributes.ReuseSlot);
+            original &= ~(MethodAttributes.CheckAccessOnOverride);
+            original |= MethodAttributes.Public;
+            return original;
+        }
+
         private string UnmangleMethodName()
         {
-            var method = OriginalMethod;
-            
-            if (method.Name == "GetType" && method.Parameters.Count == 0)
-                return "GetIl2CppType";
-            
             if (DeclaringType.AssemblyContext.GlobalContext.Options.PassthroughNames)
-                return method.Name;
+                return OriginalMethod.Name;
             
+            var method = OriginalMethod;
             if (method.Name == ".ctor")
                 return ".ctor";
             
@@ -162,6 +176,9 @@ namespace AssemblyUnhollower.Contexts
             if (method.Name.IsInvalidInSource())
                 return method.Name.FilterInvalidInSourceChars();
 
+            if (method.Name == "GetType" && method.Parameters.Count == 0)
+                return "GetIl2CppType";
+            
             return method.Name;
         }
 

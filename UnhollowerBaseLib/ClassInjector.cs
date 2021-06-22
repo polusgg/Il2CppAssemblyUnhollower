@@ -72,9 +72,11 @@ namespace UnhollowerRuntimeLib
         public static void RegisterTypeInIl2Cpp(Type type) => RegisterTypeInIl2Cpp(type, true);
         public static void RegisterTypeInIl2Cpp(Type type, bool logSuccess)
         {
-            if(type.IsGenericType || type.IsGenericTypeDefinition)
+            LogSupport.Error($"Submarine Injection System v1.2 - Injecting {type.FullName}");
+
+            if (type.IsGenericType || type.IsGenericTypeDefinition)
                 throw new ArgumentException($"Type {type} is generic and can't be used in il2cpp");
-            
+
             var currentPointer = ReadClassPointerForType(type);
             if (currentPointer != IntPtr.Zero)
                 throw new ArgumentException($"Type {type} is already registered in il2cpp");
@@ -83,19 +85,19 @@ namespace UnhollowerRuntimeLib
             var baseClassPointer = UnityVersionHandler.Wrap((Il2CppClass*) ReadClassPointerForType(baseType));
             if (baseClassPointer == null)
                 throw new ArgumentException($"Base class {baseType} of class {type} is not registered in il2cpp");
-            
+
             if (baseClassPointer.ValueType || baseClassPointer.EnumType)
                 throw new ArgumentException($"Base class {baseType} is value type and can't be inherited from");
-            
+
             if (baseClassPointer.IsGeneric)
                 throw new ArgumentException($"Base class {baseType} is generic and can't be inherited from");
-            
+
             if ((baseClassPointer.Flags & Il2CppClassAttributes.TYPE_ATTRIBUTE_SEALED) != 0)
                 throw new ArgumentException($"Base class {baseType} is sealed and can't be inherited from");
-            
+
             if ((baseClassPointer.Flags & Il2CppClassAttributes.TYPE_ATTRIBUTE_INTERFACE) != 0)
                 throw new ArgumentException($"Base class {baseType} is an interface and can't be inherited from");
-            
+
             lock (InjectedTypes)
                 if (!InjectedTypes.Add(type.FullName))
                     throw new ArgumentException($"Type with FullName {type.FullName} is already injected. Don't inject the same type twice, or use a different namespace");
@@ -131,7 +133,7 @@ namespace UnhollowerRuntimeLib
             classPointer.MethodCount = (ushort) methodCount;
             var methodPointerArray = (Il2CppMethodInfo**) Marshal.AllocHGlobal(methodCount * IntPtr.Size);
             classPointer.Methods = methodPointerArray;
-
+           
             methodPointerArray[0] = ConvertStaticMethod(FinalizeDelegate, "Finalize", classPointer);
             var finalizeMethod = UnityVersionHandler.Wrap(methodPointerArray[0]);
             methodPointerArray[1] = ConvertStaticMethod(CreateEmptyCtor(type), ".ctor", classPointer);
@@ -144,11 +146,83 @@ namespace UnhollowerRuntimeLib
             var vTablePointer = (VirtualInvokeData*) classPointer.VTable;
             var baseVTablePointer = (VirtualInvokeData*) baseClassPointer.VTable;
             classPointer.VtableCount = baseClassPointer.VtableCount;
+
+            //Abstract and Virtual Fix
+            if (classPointer.Flags.HasFlag(Il2CppClassAttributes.TYPE_ATTRIBUTE_ABSTRACT) && IL2CPP.il2cpp_class_is_abstract((IntPtr)baseClassPointer.Class))
+            {
+                //Inheriting from an abstract class, make injected class not abstract.
+                LogSupport.Trace($"Removing Abstract flag");
+                classPointer.Flags &= ~Il2CppClassAttributes.TYPE_ATTRIBUTE_ABSTRACT;
+
+                int nativeMethodCount = baseClassPointer.MethodCount;
+                LogSupport.Trace($"Native Method count: {nativeMethodCount}");
+
+                List<int> methofPointerArrayIndices = new List<int>();
+                for (int x = 0; x < nativeMethodCount; x++)
+                {
+                    var method = UnityVersionHandler.Wrap(baseClassPointer.Methods[x]);
+
+                    //VTable entries for abstact methods are empty point them to implementation methods
+                    if (method.Flags.HasFlag(Il2CppMethodFlags.METHOD_ATTRIBUTE_ABSTRACT))
+                    {
+                        string Il2CppMethodName = Marshal.PtrToStringAnsi(method.Name);
+
+                        MethodInfo monoMethodImplementation = type.GetMethod(Il2CppMethodName);
+
+
+                        int methodPointerArrayIndex = Array.IndexOf(eligibleMethods, monoMethodImplementation);
+                        if (methodPointerArrayIndex < 0)
+                        {
+                            LogSupport.Error($"No implementation defined for abstract method: {Il2CppMethodName} !!!!!!!!");
+                            throw new Exception("All abstract methods must be defined in injected class");
+                        }
+                        else
+                        {
+                            methodPointerArrayIndex += 2;
+                            methofPointerArrayIndices.Add(methodPointerArrayIndex);
+                        }
+                    }
+                }
+
+
+                int abstractMethodIndex = 0;
+                int[] abstractIndices = methofPointerArrayIndices.ToArray();
+
+                for (var y = 0; y < classPointer.VtableCount; y++)
+                {
+                    if ((int)baseVTablePointer[y].methodPtr == 0)
+                    {
+                        var method = UnityVersionHandler.Wrap(methodPointerArray[abstractIndices[abstractMethodIndex]]);
+                        LogSupport.Trace($"Allocating Memory for {Marshal.PtrToStringAnsi(method.Name)}");
+                        vTablePointer[y].method = methodPointerArray[abstractIndices[abstractMethodIndex]];
+                        vTablePointer[y].methodPtr = method.MethodPointer;
+                        abstractMethodIndex++;
+
+                    }
+                }
+            }
+
+            string[] eligibleMethodNames = eligibleMethods.Select(m => m.Name).ToArray();
+
             for (var i = 0; i < classPointer.VtableCount; i++)
             {
+                if ((int)baseVTablePointer[i].methodPtr == 0) continue;
+
                 vTablePointer[i] = baseVTablePointer[i];
-                var vTableMethod = UnityVersionHandler.Wrap(vTablePointer[i].method);
-                if (Marshal.PtrToStringAnsi(vTableMethod.Name) == "Finalize") // slot number is not static
+
+                string Il2CppMethodName = Marshal.PtrToStringAnsi(UnityVersionHandler.Wrap(vTablePointer[i].method).Name);
+                MethodInfo monoMethodImplementation = type.GetMethod(Il2CppMethodName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+
+                int methodPointerArrayIndex = Array.IndexOf(eligibleMethods, monoMethodImplementation);
+                if (methodPointerArrayIndex > 0)
+                {
+                    var method = UnityVersionHandler.Wrap(methodPointerArray[methodPointerArrayIndex + 2]);
+                    LogSupport.Trace($"Allocating Memory for  {Il2CppMethodName}: {method.Name}");
+                    vTablePointer[i].method = methodPointerArray[methodPointerArrayIndex + 2];
+                    vTablePointer[i].methodPtr = method.MethodPointer;
+                }
+
+                if (Il2CppMethodName == "Finalize") // slot number is not static
                 {
                     vTablePointer[i].method = methodPointerArray[0];
                     vTablePointer[i].methodPtr = finalizeMethod.MethodPointer;
@@ -195,8 +269,9 @@ namespace UnhollowerRuntimeLib
 
         private static bool IsTypeSupported(Type type)
         {
-            if(type.IsValueType) return type == typeof(void);
-            if(typeof(Il2CppSystem.ValueType).IsAssignableFrom(type)) return false;
+            //if(type.IsValueType) return type == typeof(void);
+            if (type.IsValueType) return true;
+            if (typeof(Il2CppSystem.ValueType).IsAssignableFrom(type)) return false;
             
             return typeof(Il2CppObjectBase).IsAssignableFrom(type);
         }
@@ -316,6 +391,7 @@ namespace UnhollowerRuntimeLib
 
         public static void Finalize(IntPtr ptr)
         {
+            LogSupport.Warning("Running finalize");
             var gcHandle = ClassInjectorBase.GetGcHandlePtrFromIl2CppObject(ptr);
             GCHandle.FromIntPtr(gcHandle).Free();
         }
@@ -434,9 +510,11 @@ namespace UnhollowerRuntimeLib
             } else if (monoMethod.ReturnType == typeof(string))
             {
                 body.Emit(OpCodes.Call, typeof(IL2CPP).GetMethod(nameof(IL2CPP.ManagedStringToIl2Cpp))!);
-            } else if (monoMethod.ReturnType.IsValueType)
+            }
+            else if (monoMethod.ReturnType.IsValueType)
             {
-                throw new NotImplementedException("Value types are not supported for returns");
+                //Do Nothing - LMAO
+                //throw new NotImplementedException("Value types are not supported for returns");
             }
             else
             {

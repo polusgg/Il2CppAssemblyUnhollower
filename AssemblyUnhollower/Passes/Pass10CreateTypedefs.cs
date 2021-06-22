@@ -81,6 +81,8 @@ namespace AssemblyUnhollower.Passes
         private static TypeAttributes AdjustAttributes(TypeAttributes typeAttributes)
         {
             typeAttributes |= TypeAttributes.BeforeFieldInit;
+
+            //TODO: REMOVE ABSTRACT AND INTERFACE REMOVAL AND ACTUALLY MAKE WORK
             typeAttributes &= ~(TypeAttributes.Abstract | TypeAttributes.Interface);
             
             var visibility = typeAttributes & TypeAttributes.VisibilityMask;
