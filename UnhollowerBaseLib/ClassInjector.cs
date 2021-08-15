@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -72,7 +73,7 @@ namespace UnhollowerRuntimeLib
         public static void RegisterTypeInIl2Cpp(Type type) => RegisterTypeInIl2Cpp(type, true);
         public static void RegisterTypeInIl2Cpp(Type type, bool logSuccess)
         {
-            LogSupport.Error($"Submarine Injection System v1.2 - Injecting {type.FullName}");
+            LogSupport.Info($"Submarine Injection System v1.2 - Injecting {type.FullName}");
 
             if (type.IsGenericType || type.IsGenericTypeDefinition)
                 throw new ArgumentException($"Type {type} is generic and can't be used in il2cpp");
@@ -140,6 +141,7 @@ namespace UnhollowerRuntimeLib
             for (var i = 0; i < eligibleMethods.Length; i++)
             {
                 var methodInfo = eligibleMethods[i];
+                RuntimeHelpers.PrepareMethod(methodInfo.MethodHandle);
                 methodPointerArray[i + 2] = ConvertMethodInfo(methodInfo, classPointer);
             }
 
@@ -391,7 +393,7 @@ namespace UnhollowerRuntimeLib
 
         public static void Finalize(IntPtr ptr)
         {
-            LogSupport.Warning("Running finalize");
+            // LogSupport.Warning("Running finalize");
             var gcHandle = ClassInjectorBase.GetGcHandlePtrFromIl2CppObject(ptr);
             GCHandle.FromIntPtr(gcHandle).Free();
         }
